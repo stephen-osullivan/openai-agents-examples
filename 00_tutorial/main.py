@@ -2,8 +2,10 @@
 
 from agents import Agent, InputGuardrail, GuardrailFunctionOutput, Runner, function_tool, WebSearchTool
 from agents.exceptions import InputGuardrailTripwireTriggered
+from openai.types.responses import ResponseTextDeltaEvent
 from pydantic import BaseModel
 from dotenv import load_dotenv
+import gradio as gr
 
 import asyncio
 
@@ -80,21 +82,39 @@ triage_agent = Agent(
     ],
 )
 
-async def main():
-    
-    questions = [
-        "What are today's major newspaper headlines in the UK (25/12/2025)?", # goes to current affairs and utilises web search
-        "Who was the first president of the united states?", # goes to history tutor
-        "Do you love me?", # gets blocked by guardrail
-        "What is the answer to 3 * 4 + e^2?", # goes to math tutor,
-        
-    ]
-    for question in questions:
-        try:
-            result = await Runner.run(triage_agent, question)
-            print(result.final_output)
-        except InputGuardrailTripwireTriggered as e:
-            print("Guardrail blocked this input:", e)
+async def answer_question_stream(question: str):
+    """Stream updates for a single question through the triage agent."""
+    question = (question or "").strip()
+    if not question:
+        yield "Please enter a question."
+        return
+
+    # quick initial response so the UI updates immediately
+    yield "Working on it..."
+
+    try:
+        # Most agents are not token-streaming yet; we still expose a generator
+        # so the Gradio UI can stream incremental messages.
+        result = await Runner.run(triage_agent, question)
+        yield str(result.final_output)
+    except InputGuardrailTripwireTriggered as e:
+        yield f"Guardrail blocked this input: {e}"
+    except Exception as e:  # keep app resilient
+        yield f"Something went wrong: {e}"
+
+### Gradio App
+def build_demo() -> gr.Blocks:
+    with gr.Blocks(title="Agents Homework Helper") as demo:
+        gr.Markdown("# Homework Helper\nAsk about maths, history, or current affairs.")
+        question_box = gr.Textbox(label="Your question", placeholder="e.g. What is the answer to 3 * 4 + e^2?")
+        ask_btn = gr.Button("Ask")
+        output_box = gr.Markdown()
+
+        ask_btn.click(fn=answer_question_stream, inputs=question_box, outputs=output_box)
+    return demo
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    demo = build_demo()
+    demo.queue()  # allow async handler
+    demo.launch()
