@@ -1,31 +1,39 @@
 # taken and expanded from https://openai.github.io/openai-agents-python/quickstart/
 
-from agents import Agent, InputGuardrail, GuardrailFunctionOutput, Runner, function_tool
+from agents import Agent, InputGuardrail, GuardrailFunctionOutput, Runner, function_tool, WebSearchTool
 from agents.exceptions import InputGuardrailTripwireTriggered
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-load_dotenv(override=True)
-
 import asyncio
 
-### Guardrail Agent ###
-class AcademicOutput(BaseModel):
-    is_academic: bool
-    reasoning: str
+load_dotenv(override=True)
 
-guardrail_agent = Agent(
-    name="Guardrail check",
-    instructions="Check if the user is asking a question about maths or history. If so, return True, otherwise return False.",
-    output_type=AcademicOutput,
-    model="gpt-4o-mini",
+### web search tool run by openai###
+web_search_tool = WebSearchTool(
+    search_context_size='low',
 )
-### math tutor agent ###
 
+### custom (local) calculator tool ###
 @function_tool
 def calculator(expression: str) -> str:
     """Evaluate a mathematical expression in python and return the answer"""
     return eval(expression)
+
+### Guardrail Agent ###
+class ValidQueryOutput(BaseModel):
+    is_valid_query: bool
+    reasoning: str
+
+guardrail_agent = Agent(
+    name="Guardrail check",
+    instructions="Check if the user is asking a valid question about maths, history or current affairs. \
+        If so, return True, otherwise return False.",
+    model="gpt-4o-mini",
+    output_type=ValidQueryOutput,
+)
+### math tutor agent ###
+
 
 math_tutor_agent = Agent(
     name="Math Tutor",
@@ -44,20 +52,29 @@ history_tutor_agent = Agent(
     instructions="You provide assistance with historical queries. Explain important events and context clearly.",
 )
 
+current_affairs_agent = Agent(
+    name="Current Affairs Agent",
+    handoff_description="Specialist agent for current affairs questions",
+    instructions="You provide assistance with current affairs queries. Explain important events and context clearly. \
+        Use the web search tool to find the answer to the user's question.",
+    model="gpt-4o-mini",
+    tools=[web_search_tool],
+)
+
 ### triage agent with guardrail ###
 
 async def homework_guardrail(ctx, agent, input_data):
     result = await Runner.run(guardrail_agent, input_data, context=ctx.context)
-    final_output = result.final_output_as(AcademicOutput)
+    final_output = result.final_output_as(ValidQueryOutput)
     return GuardrailFunctionOutput(
         output_info=final_output,
-        tripwire_triggered=not final_output.is_academic, # trigger if not academic
+        tripwire_triggered=not final_output.is_valid_query, # trigger if a valid query
     )
 
 triage_agent = Agent(
     name="Triage Agent",
-    instructions="You determine which agent to use based on the user's homework question",
-    handoffs=[history_tutor_agent, math_tutor_agent],
+    instructions="You determine which agent to use based on the user's question",
+    handoffs=[history_tutor_agent, math_tutor_agent, current_affairs_agent],
     input_guardrails=[
         InputGuardrail(guardrail_function=homework_guardrail),
     ],
@@ -66,9 +83,11 @@ triage_agent = Agent(
 async def main():
     
     questions = [
+        "What are today's major newspaper headlines in the UK (25/12/2025)?", # goes to current affairs and utilises web search
         "Who was the first president of the united states?", # goes to history tutor
-        "What is the meaning of life?", # gets blocked by guardrail
-        "What is the answer to 3 * 4 + e^2?", # goes to math tutor
+        "Do you love me?", # gets blocked by guardrail
+        "What is the answer to 3 * 4 + e^2?", # goes to math tutor,
+        
     ]
     for question in questions:
         try:
